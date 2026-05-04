@@ -1,0 +1,72 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to Veton EV Charger",
+        "description": "Enter the Modbus TCP connection details for the Veton / CHARX charging station.",
+        "data": {
+          "host": "Host",
+          "port": "Port",
+          "slave_id": "Slave ID",
+          "scan_interval": "Scan interval"
+        },
+        "data_description": {
+          "host": "Hostname or IP address of the charging station.",
+          "port": "Modbus TCP port. The default is 502.",
+          "slave_id": "Modbus server address. CHARX defaults to 1.",
+          "scan_interval": "Polling interval in seconds."
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Could not connect to the charging station.",
+      "modbus_error": "The charging station returned a Modbus error.",
+      "unknown": "Unexpected error."
+    },
+    "abort": {
+      "already_configured": "This charging station is already configured."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "charging_point_count": { "name": "Charging point count" },
+      "unoccupied_points": { "name": "Unoccupied points" },
+      "occupied_points": { "name": "Occupied points" },
+      "active_charging_points": { "name": "Active charging points" },
+      "total_power": { "name": "Total power" },
+      "total_current_l1": { "name": "Total current L1" },
+      "total_current_l2": { "name": "Total current L2" },
+      "total_current_l3": { "name": "Total current L3" },
+      "dynamic_max_current": { "name": "Dynamic max current" },
+      "release_mode": { "name": "Release mode" },
+      "vehicle_status": { "name": "Vehicle status" },
+      "voltage_l1": { "name": "Voltage L1" },
+      "voltage_l2": { "name": "Voltage L2" },
+      "voltage_l3": { "name": "Voltage L3" },
+      "current_l1": { "name": "Current L1" },
+      "current_l2": { "name": "Current L2" },
+      "current_l3": { "name": "Current L3" },
+      "active_power": { "name": "Active power" },
+      "active_energy": { "name": "Active energy" },
+      "session_energy": { "name": "Session energy" },
+      "connection_time": { "name": "Connection time" },
+      "charging_duration": { "name": "Charging duration" },
+      "error_code": { "name": "Error code" },
+      "offered_current": { "name": "Offered current" },
+      "cable_current_capacity": { "name": "Cable current capacity" }
+    },
+    "binary_sensor": {
+      "vehicle_connected": { "name": "Vehicle connected" },
+      "charging": { "name": "Charging" },
+      "error": { "name": "Error" },
+      "modbus_release_mode": { "name": "Modbus release mode" }
+    },
+    "number": {
+      "max_current": { "name": "Maximum current" }
+    },
+    "switch": {
+      "charging_release": { "name": "Charging release" },
+      "available": { "name": "Available" }
+    }
+  }
+}

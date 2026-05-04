@@ -1,0 +1,305 @@
+"""Modbus access for Veton / CHARX based EV chargers."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+
+from pymodbus.client import ModbusTcpClient
+from pymodbus.exceptions import ModbusException
+
+from .const import DEFAULT_TIMEOUT, MAX_CHARGING_POINTS
+
+
+class VetonConnectionError(Exception):
+    """Raised when the charger cannot be reached."""
+
+
+class VetonModbusError(Exception):
+    """Raised when a Modbus request fails."""
+
+
+def point_address(point: int, offset: int) -> int:
+    """Return a charging point register address.
+
+    CHARX/Veton uses 0-999 for station-wide data and x000-x999 for charging
+    point data, where x is the assigned charging point number.
+    """
+    return point * 1000 + offset
+
+
+def decode_u32(words: list[int]) -> int:
+    """Decode unsigned 32-bit integer, MSW first."""
+    return (words[0] << 16) | words[1]
+
+
+def decode_s32(words: list[int]) -> int:
+    """Decode signed 32-bit integer, MSW first."""
+    raw = decode_u32(words)
+    return raw - 0x100000000 if raw & 0x80000000 else raw
+
+
+def decode_u64(words: list[int]) -> int:
+    """Decode unsigned 64-bit integer, MSW first."""
+    value = 0
+    for word in words:
+        value = (value << 16) | word
+    return value
+
+
+def decode_s64(words: list[int]) -> int:
+    """Decode signed 64-bit integer, MSW first."""
+    raw = decode_u64(words)
+    return raw - 0x10000000000000000 if raw & 0x8000000000000000 else raw
+
+
+def decode_ascii(words: list[int]) -> str:
+    """Decode register words as ASCII."""
+    data = bytearray()
+    for word in words:
+        data.append((word >> 8) & 0xFF)
+        data.append(word & 0xFF)
+    return data.decode("ascii", errors="ignore").rstrip("\x00 ").strip()
+
+
+@dataclass(slots=True)
+class StationData:
+    """Station-wide Modbus data."""
+
+    device_designation: str
+    software_version: str
+    charging_point_count: int
+    controllers_non_critical_error: int | None
+    controllers_error: int | None
+    unoccupied_points: int | None
+    occupied_points: int | None
+    active_charging_points: int | None
+    total_power_mw: int | None
+    total_current_l1_ma: int | None
+    total_current_l2_ma: int | None
+    total_current_l3_ma: int | None
+    availability: int | None
+    dynamic_max_current_a: int | None
+
+
+@dataclass(slots=True)
+class ChargingPointData:
+    """Per charging point Modbus data."""
+
+    point: int
+    uid: str
+    associated_uid: str
+    backplane_position: int | None
+    release_mode: int | None
+    voltage_l1_mv: int | None
+    voltage_l2_mv: int | None
+    voltage_l3_mv: int | None
+    current_l1_ma: int | None
+    current_l2_ma: int | None
+    current_l3_ma: int | None
+    active_power_mw: int | None
+    reactive_power_mvar: int | None
+    apparent_power_mva: int | None
+    active_energy_wh: int | None
+    session_energy_wh: int | None
+    error_code: int | None
+    digital_inputs: int | None
+    pwm_duty_cycle: int | None
+    offered_current_a: int | None
+    cable_current_capacity_a: int | None
+    vehicle_status: str
+    connection_time_s: int | None
+    charging_duration_s: int | None
+    charging_release: int | None
+    max_current_a: int | None
+    availability: int | None
+    watchdog_fallback_current_a: int | None
+    watchdog_timer_s: int | None
+
+
+@dataclass(slots=True)
+class VetonData:
+    """Complete charger data."""
+
+    station: StationData
+    points: dict[int, ChargingPointData]
+
+
+class VetonModbusClient:
+    """Small synchronous Modbus TCP client for CHARX/Veton chargers."""
+
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        slave_id: int,
+        timeout: int = DEFAULT_TIMEOUT,
+    ) -> None:
+        self.host = host
+        self.port = port
+        self.slave_id = slave_id
+        self.timeout = timeout
+        self._client: ModbusTcpClient | None = None
+
+    def close(self) -> None:
+        """Close the Modbus connection."""
+        if self._client is not None:
+            self._client.close()
+            self._client = None
+
+    def _ensure_client(self) -> ModbusTcpClient:
+        """Return a connected client."""
+        if self._client is None or not self._client.connected:
+            self.close()
+            self._client = ModbusTcpClient(
+                self.host,
+                port=self.port,
+                timeout=self.timeout,
+            )
+            if not self._client.connect():
+                raise VetonConnectionError(f"Could not connect to {self.host}:{self.port}")
+        return self._client
+
+    def read_registers(self, address: int, count: int = 1) -> list[int]:
+        """Read holding registers."""
+        client = self._ensure_client()
+        try:
+            response = client.read_holding_registers(
+                address=address,
+                count=count,
+                slave=self.slave_id,
+            )
+        except ModbusException as err:
+            self.close()
+            raise VetonModbusError(str(err)) from err
+
+        if response.isError():
+            raise VetonModbusError(str(response))
+        return list(response.registers)
+
+    def write_register(self, address: int, value: int) -> None:
+        """Write one holding register."""
+        client = self._ensure_client()
+        try:
+            response = client.write_register(
+                address=address,
+                value=value,
+                slave=self.slave_id,
+            )
+        except ModbusException as err:
+            self.close()
+            raise VetonModbusError(str(err)) from err
+
+        if response.isError():
+            raise VetonModbusError(str(response))
+
+    def read_station(self) -> StationData:
+        """Read station-wide registers."""
+        point_count = self.read_registers(114, 1)[0]
+        point_count = min(max(point_count, 0), MAX_CHARGING_POINTS)
+
+        return StationData(
+            device_designation=decode_ascii(self.read_registers(100, 10)),
+            software_version=decode_ascii(self.read_registers(110, 4)),
+            charging_point_count=point_count,
+            controllers_non_critical_error=self._read_u16_or_none(147),
+            controllers_error=self._read_u16_or_none(148),
+            unoccupied_points=self._read_u16_or_none(149),
+            occupied_points=self._read_u16_or_none(150),
+            active_charging_points=self._read_u16_or_none(151),
+            total_power_mw=self._read_u32_or_none(152),
+            total_current_l1_ma=self._read_s32_or_none(158),
+            total_current_l2_ma=self._read_s32_or_none(160),
+            total_current_l3_ma=self._read_s32_or_none(162),
+            availability=self._read_u16_or_none(164),
+            dynamic_max_current_a=self._read_u16_or_none(167),
+        )
+
+    def read_point(self, point: int) -> ChargingPointData:
+        """Read registers for one charging point."""
+        return ChargingPointData(
+            point=point,
+            uid=decode_ascii(self.read_registers(point_address(point, 113), 3)),
+            associated_uid=decode_ascii(self.read_registers(point_address(point, 116), 3)),
+            backplane_position=self._read_point_u16_or_none(point, 119),
+            release_mode=self._read_point_u16_or_none(point, 120),
+            voltage_l1_mv=self._read_point_u32_or_none(point, 232),
+            voltage_l2_mv=self._read_point_u32_or_none(point, 234),
+            voltage_l3_mv=self._read_point_u32_or_none(point, 236),
+            current_l1_ma=self._read_point_u32_or_none(point, 238),
+            current_l2_ma=self._read_point_u32_or_none(point, 240),
+            current_l3_ma=self._read_point_u32_or_none(point, 242),
+            active_power_mw=self._read_point_u32_or_none(point, 244),
+            reactive_power_mvar=self._read_point_s32_or_none(point, 246),
+            apparent_power_mva=self._read_point_u32_or_none(point, 248),
+            active_energy_wh=self._read_point_u64_or_none(point, 250),
+            session_energy_wh=self._read_point_u64_or_none(point, 289),
+            error_code=self._read_point_u32_or_none(point, 293),
+            digital_inputs=self._read_point_u16_or_none(point, 295),
+            pwm_duty_cycle=self._read_point_u16_or_none(point, 296),
+            offered_current_a=self._read_point_u16_or_none(point, 297),
+            cable_current_capacity_a=self._read_point_u16_or_none(point, 298),
+            vehicle_status=decode_ascii(self.read_registers(point_address(point, 299), 1)),
+            connection_time_s=self._read_point_u32_or_none(point, 285),
+            charging_duration_s=self._read_point_u32_or_none(point, 287),
+            charging_release=self._read_point_u16_or_none(point, 300),
+            max_current_a=self._read_point_u16_or_none(point, 301),
+            availability=self._read_point_u16_or_none(point, 304),
+            watchdog_fallback_current_a=self._read_point_u16_or_none(point, 306),
+            watchdog_timer_s=self._read_point_u16_or_none(point, 307),
+        )
+
+    def read_all(self) -> VetonData:
+        """Read station data and all configured charging points."""
+        station = self.read_station()
+        points: dict[int, ChargingPointData] = {}
+        for point in range(1, station.charging_point_count + 1):
+            try:
+                points[point] = self.read_point(point)
+            except VetonModbusError:
+                continue
+        return VetonData(station=station, points=points)
+
+    def set_charging_release(self, point: int, enabled: bool) -> None:
+        """Enable or disable charging release for one point."""
+        self.write_register(point_address(point, 300), 1 if enabled else 0)
+
+    def set_point_available(self, point: int, available: bool) -> None:
+        """Set charging point availability."""
+        self.write_register(point_address(point, 304), 1 if available else 0)
+
+    def set_max_current(self, point: int, current: int) -> None:
+        """Set maximum charging current for one point."""
+        self.write_register(point_address(point, 301), current)
+
+    def _read_u16_or_none(self, address: int) -> int | None:
+        return self._read_or_none(address, 1, lambda words: words[0])
+
+    def _read_u32_or_none(self, address: int) -> int | None:
+        return self._read_or_none(address, 2, decode_u32)
+
+    def _read_s32_or_none(self, address: int) -> int | None:
+        return self._read_or_none(address, 2, decode_s32)
+
+    def _read_point_u16_or_none(self, point: int, offset: int) -> int | None:
+        return self._read_u16_or_none(point_address(point, offset))
+
+    def _read_point_u32_or_none(self, point: int, offset: int) -> int | None:
+        return self._read_u32_or_none(point_address(point, offset))
+
+    def _read_point_s32_or_none(self, point: int, offset: int) -> int | None:
+        return self._read_s32_or_none(point_address(point, offset))
+
+    def _read_point_u64_or_none(self, point: int, offset: int) -> int | None:
+        return self._read_or_none(point_address(point, offset), 4, decode_u64)
+
+    def _read_or_none(
+        self,
+        address: int,
+        count: int,
+        decoder: Any,
+    ) -> int | None:
+        try:
+            return decoder(self.read_registers(address, count))
+        except VetonModbusError:
+            return None

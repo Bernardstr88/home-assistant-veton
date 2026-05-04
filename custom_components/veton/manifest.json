@@ -1,0 +1,12 @@
+{
+  "domain": "veton",
+  "name": "Veton EV Charger",
+  "after_dependencies": ["modbus"],
+  "codeowners": ["@bstruelens"],
+  "config_flow": true,
+  "documentation": "https://github.com/bstruelens/home-assistant-veton",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/bstruelens/home-assistant-veton/issues",
+  "requirements": ["pymodbus==3.8.6"],
+  "version": "0.1.0"
+}
