@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import socket
 from typing import Any
 
 import voluptuous as vol
@@ -13,7 +14,6 @@ from homeassistant.core import HomeAssistant
 from .const import (
     CONF_SCAN_INTERVAL,
     CONF_SLAVE_ID,
-    DEFAULT_NAME,
     DEFAULT_PORT,
     DEFAULT_SCAN_INTERVAL,
     DEFAULT_SLAVE_ID,
@@ -23,22 +23,23 @@ from .const import (
 
 
 async def _validate_input(hass: HomeAssistant, data: dict[str, Any]) -> str:
-    """Validate the user input allows us to connect."""
-    from .modbus import (  # noqa: PLC0415
-        VetonModbusClient,
-    )
+    """Validate the user input allows us to connect.
 
-    client = VetonModbusClient(
-        host=data[CONF_HOST],
-        port=data[CONF_PORT],
-        slave_id=data[CONF_SLAVE_ID],
+    Keep the config flow independent from pymodbus so Home Assistant can always
+    load the form, even before optional Modbus dependencies are ready.
+    """
+    await hass.async_add_executor_job(
+        _test_tcp_connection,
+        data[CONF_HOST],
+        data[CONF_PORT],
     )
-    try:
-        station = await hass.async_add_executor_job(client.read_station)
-    finally:
-        client.close()
+    return f"Veton EV Charger ({data[CONF_HOST]})"
 
-    return station.device_designation or DEFAULT_NAME
+
+def _test_tcp_connection(host: str, port: int) -> None:
+    """Test whether the Modbus TCP port accepts a socket connection."""
+    with socket.create_connection((host, port), timeout=5):
+        return
 
 
 class VetonConfigFlow(ConfigFlow, domain=DOMAIN):

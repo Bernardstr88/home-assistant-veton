@@ -63,6 +63,9 @@ The setup flow asks for:
 - Slave ID, default `1`
 - Scan interval, default `10` seconds
 
+The config flow only checks whether the TCP port is reachable. The first real
+Modbus register read happens when Home Assistant sets up the integration.
+
 ## Notes
 
 Controls are only available when the charging point reports release mode `5`

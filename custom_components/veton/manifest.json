@@ -7,6 +7,6 @@
   "documentation": "https://github.com/Bernardstr88/home-assistant-veton",
   "iot_class": "local_polling",
   "issue_tracker": "https://github.com/Bernardstr88/home-assistant-veton/issues",
-  "requirements": ["pymodbus==3.8.6"],
-  "version": "0.1.1"
+  "requirements": [],
+  "version": "0.1.2"
 }

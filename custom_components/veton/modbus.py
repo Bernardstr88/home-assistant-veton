@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import socket
+import struct
 from typing import Any
-
-from pymodbus.client import ModbusTcpClient
-from pymodbus.exceptions import ModbusException
 
 from .const import DEFAULT_TIMEOUT, MAX_CHARGING_POINTS
 
@@ -139,59 +138,98 @@ class VetonModbusClient:
         self.port = port
         self.slave_id = slave_id
         self.timeout = timeout
-        self._client: ModbusTcpClient | None = None
+        self._socket: socket.socket | None = None
+        self._transaction_id = 0
 
     def close(self) -> None:
         """Close the Modbus connection."""
-        if self._client is not None:
-            self._client.close()
-            self._client = None
+        if self._socket is not None:
+            try:
+                self._socket.close()
+            finally:
+                self._socket = None
 
-    def _ensure_client(self) -> ModbusTcpClient:
-        """Return a connected client."""
-        if self._client is None or not self._client.connected:
-            self.close()
-            self._client = ModbusTcpClient(
-                self.host,
-                port=self.port,
-                timeout=self.timeout,
-            )
-            if not self._client.connect():
-                raise VetonConnectionError(f"Could not connect to {self.host}:{self.port}")
-        return self._client
+    def _ensure_socket(self) -> socket.socket:
+        """Return a connected socket."""
+        if self._socket is None:
+            try:
+                self._socket = socket.create_connection(
+                    (self.host, self.port),
+                    timeout=self.timeout,
+                )
+                self._socket.settimeout(self.timeout)
+            except OSError as err:
+                raise VetonConnectionError(
+                    f"Could not connect to {self.host}:{self.port}"
+                ) from err
+        return self._socket
 
     def read_registers(self, address: int, count: int = 1) -> list[int]:
         """Read holding registers."""
-        client = self._ensure_client()
-        try:
-            response = client.read_holding_registers(
-                address=address,
-                count=count,
-                slave=self.slave_id,
-            )
-        except ModbusException as err:
-            self.close()
-            raise VetonModbusError(str(err)) from err
-
-        if response.isError():
-            raise VetonModbusError(str(response))
-        return list(response.registers)
+        payload = self._request(0x03, struct.pack(">HH", address, count))
+        if len(payload) < 1 or payload[0] != count * 2:
+            raise VetonModbusError(f"Invalid read response for address {address}")
+        data = payload[1:]
+        return [
+            struct.unpack(">H", data[index : index + 2])[0]
+            for index in range(0, len(data), 2)
+        ]
 
     def write_register(self, address: int, value: int) -> None:
         """Write one holding register."""
-        client = self._ensure_client()
-        try:
-            response = client.write_register(
-                address=address,
-                value=value,
-                slave=self.slave_id,
-            )
-        except ModbusException as err:
-            self.close()
-            raise VetonModbusError(str(err)) from err
+        payload = self._request(0x06, struct.pack(">HH", address, value))
+        if payload != struct.pack(">HH", address, value):
+            raise VetonModbusError(f"Invalid write response for address {address}")
 
-        if response.isError():
-            raise VetonModbusError(str(response))
+    def _request(self, function_code: int, payload: bytes) -> bytes:
+        """Send one Modbus/TCP request and return the response payload."""
+        self._transaction_id = (self._transaction_id + 1) % 0x10000
+        pdu = bytes([function_code]) + payload
+        header = struct.pack(
+            ">HHHB",
+            self._transaction_id,
+            0,
+            len(pdu) + 1,
+            self.slave_id,
+        )
+        sock = self._ensure_socket()
+        try:
+            sock.sendall(header + pdu)
+            response_header = self._recv_exact(7)
+            transaction_id, protocol_id, length, unit_id = struct.unpack(
+                ">HHHB",
+                response_header,
+            )
+            if transaction_id != self._transaction_id or protocol_id != 0:
+                raise VetonModbusError("Invalid Modbus/TCP response header")
+            response_pdu = self._recv_exact(length - 1)
+        except OSError as err:
+            self.close()
+            raise VetonConnectionError(str(err)) from err
+
+        if unit_id != self.slave_id:
+            raise VetonModbusError("Invalid Modbus unit id in response")
+        if not response_pdu:
+            raise VetonModbusError("Empty Modbus response")
+        response_function = response_pdu[0]
+        if response_function == function_code + 0x80:
+            code = response_pdu[1] if len(response_pdu) > 1 else 0
+            raise VetonModbusError(f"Modbus exception {code}")
+        if response_function != function_code:
+            raise VetonModbusError("Unexpected Modbus function code in response")
+        return response_pdu[1:]
+
+    def _recv_exact(self, size: int) -> bytes:
+        """Receive exactly size bytes from the socket."""
+        sock = self._ensure_socket()
+        chunks = bytearray()
+        while len(chunks) < size:
+            chunk = sock.recv(size - len(chunks))
+            if not chunk:
+                self.close()
+                raise VetonConnectionError("Connection closed by remote host")
+            chunks.extend(chunk)
+        return bytes(chunks)
 
     def read_station(self) -> StationData:
         """Read station-wide registers."""
