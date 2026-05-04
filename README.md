@@ -48,6 +48,12 @@ Until this repository is available as a default HACS repository:
 5. Restart Home Assistant
 6. Add the integration from Settings > Devices & services
 
+Custom repository URL:
+
+```text
+https://github.com/Bernardstr88/home-assistant-veton
+```
+
 ## Configuration
 
 The setup flow asks for:

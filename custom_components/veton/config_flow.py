@@ -6,7 +6,7 @@ from typing import Any
 
 import voluptuous as vol
 
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import ConfigFlow
 from homeassistant.const import CONF_HOST, CONF_PORT
 from homeassistant.core import HomeAssistant
 
@@ -20,11 +20,14 @@ from .const import (
     DOMAIN,
     MIN_SCAN_INTERVAL,
 )
-from .modbus import VetonConnectionError, VetonModbusClient, VetonModbusError
 
 
 async def _validate_input(hass: HomeAssistant, data: dict[str, Any]) -> str:
     """Validate the user input allows us to connect."""
+    from .modbus import (  # noqa: PLC0415
+        VetonModbusClient,
+    )
+
     client = VetonModbusClient(
         host=data[CONF_HOST],
         port=data[CONF_PORT],
@@ -46,7 +49,7 @@ class VetonConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_user(
         self,
         user_input: dict[str, Any] | None = None,
-    ) -> ConfigFlowResult:
+    ) -> dict[str, Any]:
         """Handle the initial step."""
         errors: dict[str, str] = {}
 
@@ -58,12 +61,8 @@ class VetonConfigFlow(ConfigFlow, domain=DOMAIN):
 
             try:
                 title = await _validate_input(self.hass, user_input)
-            except VetonConnectionError:
-                errors["base"] = "cannot_connect"
-            except VetonModbusError:
-                errors["base"] = "modbus_error"
             except Exception:
-                errors["base"] = "unknown"
+                errors["base"] = "cannot_connect"
             else:
                 return self.async_create_entry(title=title, data=user_input)
 
